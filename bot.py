@@ -1,3 +1,5 @@
+import json
+import logging
 import os
 import re
 
@@ -9,6 +11,9 @@ import ai_agent
 import storage
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
 
 app = App(token=os.getenv("SLACK_BOT_TOKEN"))
 
@@ -67,11 +72,14 @@ def handle_mention(event, say, client):
         phase = conv["phase"]
 
         if phase == 1:
+            log.info("[新規会話] thread_ts=%s user=%s message=%s", thread_ts, user_id, user_message)
             result1 = ai_agent.run_phase1(user_message)
             conv["category"] = result1.get("category")
             conv["sub_category"] = result1.get("sub_category")
             conv["category_confidence"] = result1.get("confidence")
             conv["category_rationale"] = result1.get("rationale")
+            log.info("[Phase1] category=%s sub_category=%s confidence=%s rationale=%s",
+                     conv["category"], conv["sub_category"], conv["category_confidence"], conv["category_rationale"])
             conv["messages"].append({"role": "user", "content": user_message})
             conv["phase"] = 2
             storage.save_conversation(conv)
@@ -83,6 +91,7 @@ def handle_mention(event, say, client):
             say(text=reply, thread_ts=thread_ts)
 
         elif phase == 2:
+            log.info("[Phase2] thread_ts=%s user_message=%s", thread_ts, user_message)
             conv["messages"].append({"role": "user", "content": user_message})
             result2 = ai_agent.run_phase2(conv)
             reply = result2.get("reply", "")
@@ -92,6 +101,7 @@ def handle_mention(event, say, client):
             conv["messages"].append({"role": "assistant", "content": reply})
 
             if complete:
+                log.info("[Phase2→3] ヒアリング完了 summary=%s", summary)
                 conv["phase"] = 3
                 storage.save_conversation(conv)
 
@@ -100,6 +110,7 @@ def handle_mention(event, say, client):
                 title = result3.get("title", "")
                 description = result3.get("description", "")
 
+                log.info("[Phase3] title=%s description=%s", title, description)
                 conv["task_content"] = {"title": title, "description": description}
                 storage.save_conversation(conv)
 
@@ -116,7 +127,7 @@ def handle_mention(event, say, client):
 
     except Exception as e:
         say(text="エラーが発生しました。もう一度お試しください。", thread_ts=thread_ts)
-        print(f"Error in phase {conv.get('phase')}: {e}")
+        log.error("Error in phase %s: %s", conv.get("phase"), e)
 
 
 @app.action("approve")
@@ -141,6 +152,7 @@ def handle_approve(ack, body, client):
             conv["task_content"]["final_reply"] = reply
             storage.save_conversation(conv)
 
+        log.info("[Phase4 承認] thread_ts=%s\n%s", thread_ts, json.dumps(conv.get("task_content"), ensure_ascii=False, indent=2))
         client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
 
     except Exception as e:
@@ -149,7 +161,7 @@ def handle_approve(ack, body, client):
             thread_ts=thread_ts,
             text="エラーが発生しました。もう一度お試しください。",
         )
-        print(f"Error in approve: {e}")
+        log.error("Error in approve: %s", e)
 
 
 @app.action("revise")
@@ -163,6 +175,7 @@ def handle_revise(ack, body, client):
     if conv is None:
         return
 
+    log.info("[修正] thread_ts=%s Phase2に戻す", thread_ts)
     conv["phase"] = 2
     storage.save_conversation(conv)
 
